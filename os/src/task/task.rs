@@ -51,6 +51,10 @@ pub struct TaskControlBlockInner {
 
     /// Maintain the execution status of the current process
     pub task_status: TaskStatus,
+    /// Scheduling weight.
+    pub priority: usize,
+    /// Accumulated stride scheduling pass.
+    pub stride: u128,
 
     /// Application address space
     pub memory_set: MemorySet,
@@ -121,6 +125,8 @@ impl TaskControlBlock {
                     base_size: user_sp,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                     task_status: TaskStatus::Ready,
+                    priority: 16,
+                    stride: 0,
                     memory_set,
                     parent: None,
                     children: Vec::new(),
@@ -177,6 +183,21 @@ impl TaskControlBlock {
         // **** release current PCB
     }
 
+    /// Build a fresh child image and establish the parent/child relationship.
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        let child = Arc::new(Self::new(elf_data));
+        let mut parent_inner = self.inner_exclusive_access();
+        {
+            let mut child_inner = child.inner_exclusive_access();
+            child_inner.parent = Some(Arc::downgrade(self));
+            child_inner.priority = parent_inner.priority;
+            child_inner.stride = parent_inner.stride;
+            child_inner.fd_table = parent_inner.fd_table.clone();
+        }
+        parent_inner.children.push(child.clone());
+        child
+    }
+
     /// parent process fork the child process
     pub fn fork(self: &Arc<TaskControlBlock>) -> Arc<TaskControlBlock> {
         // ---- hold parent PCB lock
@@ -209,6 +230,8 @@ impl TaskControlBlock {
                     base_size: parent_inner.base_size,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                     task_status: TaskStatus::Ready,
+                    priority: parent_inner.priority,
+                    stride: parent_inner.stride,
                     memory_set,
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),

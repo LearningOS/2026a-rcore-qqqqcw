@@ -75,29 +75,43 @@ pub fn sys_close(fd: usize) -> isize {
     0
 }
 
-/// YOUR JOB: Implement fstat.
-pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_fstat NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// Return metadata for an open regular file, copying safely across user pages.
+pub fn sys_fstat(fd: usize, st: *mut Stat) -> isize {
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    let file = match inner.fd_table.get(fd).and_then(|file| file.as_ref()) {
+        Some(file) => file.clone(),
+        None => return -1,
+    };
+    let token = inner.memory_set.token();
+    drop(inner);
+    let stat = match file.stat() {
+        Some(stat) => stat,
+        None => return -1,
+    };
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            &stat as *const Stat as *const u8,
+            core::mem::size_of::<Stat>(),
+        )
+    };
+    if crate::mm::copy_to_user(token, st as *mut u8, bytes) {
+        0
+    } else {
+        -1
+    }
 }
 
-/// YOUR JOB: Implement linkat.
-pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_linkat NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// Create a second name for an existing inode.
+pub fn sys_linkat(old_name: *const u8, new_name: *const u8) -> isize {
+    let token = current_user_token();
+    let old = translated_str(token, old_name);
+    let new = translated_str(token, new_name);
+    crate::fs::ROOT_INODE.link(&old, &new)
 }
 
-/// YOUR JOB: Implement unlinkat.
-pub fn sys_unlinkat(_name: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_unlinkat NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// Remove one directory entry without invalidating still-open files.
+pub fn sys_unlinkat(name: *const u8) -> isize {
+    let name = translated_str(current_user_token(), name);
+    crate::fs::ROOT_INODE.unlink(&name)
 }

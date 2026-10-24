@@ -3,7 +3,8 @@ use super::{
     SuperBlock,
 };
 use crate::BLOCK_SZ;
-use alloc::sync::Arc;
+use alloc::collections::BTreeMap;
+use alloc::sync::{Arc, Weak};
 use spin::Mutex;
 ///An easy file system on block
 pub struct EasyFileSystem {
@@ -15,6 +16,7 @@ pub struct EasyFileSystem {
     pub data_bitmap: Bitmap,
     inode_area_start_block: u32,
     data_area_start_block: u32,
+    pub(crate) inode_cache: BTreeMap<u32, Weak<Inode>>,
 }
 
 type DataBlock = [u8; BLOCK_SZ];
@@ -41,6 +43,7 @@ impl EasyFileSystem {
         );
         let mut efs = Self {
             block_device: Arc::clone(&block_device),
+            inode_cache: BTreeMap::new(),
             inode_bitmap,
             data_bitmap,
             inode_area_start_block: 1 + inode_bitmap_blocks,
@@ -91,6 +94,7 @@ impl EasyFileSystem {
                 let inode_total_blocks =
                     super_block.inode_bitmap_blocks + super_block.inode_area_blocks;
                 let efs = Self {
+                    inode_cache: BTreeMap::new(),
                     block_device,
                     inode_bitmap: Bitmap::new(1, super_block.inode_bitmap_blocks as usize),
                     data_bitmap: Bitmap::new(
@@ -120,6 +124,16 @@ impl EasyFileSystem {
             block_id,
             (inode_id % inodes_per_block) as usize * inode_size,
         )
+    }
+    /// Recover the inode number from its on-disk location.
+    pub fn get_disk_inode_id(&self, block_id: usize, offset: usize) -> u32 {
+        ((block_id - self.inode_area_start_block as usize) * BLOCK_SZ + offset) as u32
+            / core::mem::size_of::<DiskInode>() as u32
+    }
+    /// Release a no-longer-linked inode after its last open handle closes.
+    pub fn dealloc_inode(&mut self, inode_id: u32) {
+        self.inode_bitmap
+            .dealloc(&self.block_device, inode_id as usize);
     }
     /// Get data block by id
     pub fn get_data_block_id(&self, data_block_id: u32) -> u32 {
