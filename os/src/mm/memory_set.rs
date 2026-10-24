@@ -46,6 +46,93 @@ pub struct MemorySet {
 }
 
 impl MemorySet {
+    /// Validate a page-aligned user range without truncating overflowing addresses.
+    fn user_range(start: usize, len: usize) -> Option<VPNRange> {
+        if start % PAGE_SIZE != 0 {
+            return None;
+        }
+        let end = start.checked_add(len)?;
+        if end > (1usize << 38) {
+            return None;
+        }
+        Some(VPNRange::new(
+            VirtAddr::from(start).floor(),
+            VirtAddr::from(end).ceil(),
+        ))
+    }
+
+    /// Allocate fresh zeroed anonymous pages, rejecting all overlapping mappings.
+    pub fn mmap(&mut self, start: usize, len: usize, port: usize) -> isize {
+        if port == 0 || port & !7 != 0 {
+            return -1;
+        }
+        let range = match Self::user_range(start, len) {
+            Some(r) => r,
+            None => return -1,
+        };
+        if len == 0 {
+            return 0;
+        }
+        if range.into_iter().any(|vpn| self.translate(vpn).is_some()) {
+            return -1;
+        }
+        let permission = MapPermission::from_bits((port as u8) << 1).unwrap() | MapPermission::U;
+        self.insert_framed_area(start.into(), (start + len).into(), permission);
+        0
+    }
+
+    /// Validate first, then remove pages and split the owning areas as necessary.
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        let range = match Self::user_range(start, len) {
+            Some(r) => r,
+            None => return -1,
+        };
+        if len == 0 {
+            return 0;
+        }
+        for vpn in range {
+            match self.translate(vpn) {
+                Some(pte) if pte.flags().contains(PTEFlags::U) => {}
+                _ => return -1,
+            }
+        }
+        let begin = range.get_start();
+        let end = range.get_end();
+        let mut kept = Vec::new();
+        for mut area in self.areas.drain(..) {
+            let area_start = area.vpn_range.get_start();
+            let area_end = area.vpn_range.get_end();
+            if area_end <= begin || area_start >= end || area_start == area_end {
+                kept.push(area);
+                continue;
+            }
+            let cut_start = area_start.max(begin);
+            let cut_end = area_end.min(end);
+            for vpn in VPNRange::new(cut_start, cut_end) {
+                area.unmap_one(&mut self.page_table, vpn);
+            }
+            let right_frames = area.data_frames.split_off(&cut_end);
+            if area_start < cut_start {
+                area.vpn_range = VPNRange::new(area_start, cut_start);
+                if cut_end < area_end {
+                    kept.push(MapArea {
+                        vpn_range: VPNRange::new(cut_end, area_end),
+                        data_frames: right_frames,
+                        map_type: area.map_type,
+                        map_perm: area.map_perm,
+                    });
+                }
+                kept.push(area);
+            } else if cut_end < area_end {
+                area.vpn_range = VPNRange::new(cut_end, area_end);
+                area.data_frames = right_frames;
+                kept.push(area);
+            }
+        }
+        self.areas = kept;
+        0
+    }
+
     /// Create a new empty `MemorySet`.
     pub fn new_bare() -> Self {
         Self {

@@ -39,6 +39,10 @@ pub struct TaskControlBlockInner {
 
     /// Maintain the execution status of the current process
     pub task_status: TaskStatus,
+    /// Stride scheduling weight.
+    pub priority: usize,
+    /// Accumulated scheduling pass.
+    pub stride: u128,
     /// It is set when active exit or execution error occurs
     pub exit_code: Option<i32>,
 }
@@ -74,6 +78,8 @@ impl TaskControlBlock {
                     trap_cx_ppn,
                     task_cx: TaskContext::goto_trap_return(kstack_top),
                     task_status: TaskStatus::Ready,
+                    priority: 16,
+                    stride: 0,
                     exit_code: None,
                 })
             },
