@@ -50,6 +50,12 @@ pub struct TaskControlBlockInner {
     /// Maintain the execution status of the current process
     pub task_status: TaskStatus,
 
+    /// Scheduling weight (at least two).
+    pub priority: usize,
+
+    /// Accumulated stride pass, widened to avoid machine-word wrapping.
+    pub stride: u128,
+
     /// Application address space
     pub memory_set: MemorySet,
 
@@ -112,6 +118,8 @@ impl TaskControlBlock {
                     base_size: user_sp,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                     task_status: TaskStatus::Ready,
+                    priority: 16,
+                    stride: 0,
                     memory_set,
                     parent: None,
                     children: Vec::new(),
@@ -150,6 +158,8 @@ impl TaskControlBlock {
         inner.trap_cx_ppn = trap_cx_ppn;
         // initialize base_size
         inner.base_size = user_sp;
+        inner.heap_bottom = user_sp;
+        inner.program_brk = user_sp;
         // initialize trap_cx
         let trap_cx = inner.get_trap_cx();
         *trap_cx = TrapContext::app_init_context(
@@ -160,6 +170,20 @@ impl TaskControlBlock {
             trap_handler as usize,
         );
         // **** release inner automatically
+    }
+
+    /// Build a fresh child image and establish the parent/child relationship.
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        let child = Arc::new(Self::new(elf_data));
+        let mut parent_inner = self.inner_exclusive_access();
+        {
+            let mut child_inner = child.inner_exclusive_access();
+            child_inner.parent = Some(Arc::downgrade(self));
+            child_inner.priority = parent_inner.priority;
+            child_inner.stride = parent_inner.stride;
+        }
+        parent_inner.children.push(child.clone());
+        child
     }
 
     /// parent process fork the child process
@@ -185,6 +209,8 @@ impl TaskControlBlock {
                     base_size: parent_inner.base_size,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                     task_status: TaskStatus::Ready,
+                    priority: parent_inner.priority,
+                    stride: parent_inner.stride,
                     memory_set,
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),
