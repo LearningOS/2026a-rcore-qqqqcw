@@ -18,3 +18,7 @@
 `cargo fmt --manifest-path os/Cargo.toml -- --check` 与 `git diff --check` 用于格式检查。`tests/trace.rs` 直接包含实际 syscall 源文件，用主机测试验证字节读写、低八位截断及非法请求。
 
 当前环境首次下载官方检查器时网络受限，提权审批服务返回 503；离线构建缺少 riscv Git 依赖。因此尚不能把格式检查或主机测试视为官方评测通过。联网后应执行 `make -C ci-user test CHAPTER=3` 并核对最终退出码及报告检查。
+
+## 补充启动验证
+
+在临时验证副本中使用已有本地依赖（分配器 0.8 类型适配）以及 QEMU 6.2 自带的 OpenSBI，执行 `tests/smoke/run.py ch3 --kernel-dir ... --bios default`，成功输出 `SMOKE PASS`。实际覆盖 trace 字节读写、低八位截断、trace 自身计数包含本次调用、yield 计数与非法请求。此环境与课程固定依赖/固件不同，不代表官方评分。
