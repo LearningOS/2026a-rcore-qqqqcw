@@ -270,6 +270,20 @@ fn join(tid: isize) {
     }
 }
 #[cfg(ch8)]
+extern "C" fn condition_thread(_: usize) -> ! {
+    let mutex = FIRST.load(SeqCst);
+    let condvar = SECOND.load(SeqCst);
+    check(call(464, [mutex, 0, 0, 0]) == 0, b"condition lock");
+    BARRIER.store(1, SeqCst);
+    check(call(473, [condvar, mutex, 0, 0]) == 0, b"condition wait");
+    check(BARRIER.load(SeqCst) == 2, b"condition wake predicate");
+    check(
+        call(466, [mutex, 0, 0, 0]) == 0,
+        b"condition reacquired mutex",
+    );
+    exit(0)
+}
+#[cfg(ch8)]
 fn test_sync() {
     check(call(469, [2, 0, 0, 0]) == -1, b"detect invalid");
     check(call(469, [1, 0, 0, 0]) == 0, b"detect enable");
@@ -290,5 +304,26 @@ fn test_sync() {
         join(second);
         check(REJECTED.load(SeqCst) == 1, b"one cycle rejection");
     }
+    FIRST.store(call(463, [1, 0, 0, 0]) as usize, SeqCst);
+    SECOND.store(call(471, [0; 4]) as usize, SeqCst);
+    BARRIER.store(0, SeqCst);
+    let waiter = call(460, [condition_thread as usize, 0, 0, 0]);
+    while BARRIER.load(SeqCst) != 1 {
+        yield_now();
+    }
+    check(
+        call(464, [FIRST.load(SeqCst), 0, 0, 0]) == 0,
+        b"condition main lock",
+    );
+    BARRIER.store(2, SeqCst);
+    check(
+        call(472, [SECOND.load(SeqCst), 0, 0, 0]) == 0,
+        b"condition signal",
+    );
+    check(
+        call(466, [FIRST.load(SeqCst), 0, 0, 0]) == 0,
+        b"condition main unlock",
+    );
+    join(waiter);
     check(call(462, [usize::MAX, 0, 0, 0]) == -1, b"invalid waittid");
 }
