@@ -11,6 +11,7 @@
 
 mod context;
 mod switch;
+mod syscall_stats;
 #[allow(clippy::module_inception)]
 mod task;
 
@@ -54,9 +55,9 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
-            syscall_count: [0; 512],
         }; MAX_APP_NUM];
-        for (i, task) in tasks.iter_mut().enumerate() {
+        assert!(num_app > 0 && num_app <= MAX_APP_NUM);
+        for (i, task) in tasks.iter_mut().take(num_app).enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
             task.task_status = TaskStatus::Ready;
         }
@@ -145,21 +146,14 @@ pub fn run_first_task() {
 
 /// Account for a syscall before dispatch, including trace itself.
 pub fn count_syscall(id: usize) {
-    let mut inner = TASK_MANAGER.inner.exclusive_access();
-    let current = inner.current_task;
-    if let Some(count) = inner.tasks[current].syscall_count.get_mut(id) {
-        *count += 1;
-    }
+    let current = TASK_MANAGER.inner.exclusive_access().current_task;
+    syscall_stats::record(current, id);
 }
 
 /// Return the current task's syscall count, or reject an invalid number.
 pub fn syscall_count(id: usize) -> isize {
-    let inner = TASK_MANAGER.inner.exclusive_access();
-    inner.tasks[inner.current_task]
-        .syscall_count
-        .get(id)
-        .map(|count| *count as isize)
-        .unwrap_or(-1)
+    let current = TASK_MANAGER.inner.exclusive_access().current_task;
+    syscall_stats::count(current, id)
 }
 
 /// Switch current `Running` task to the task we have found,

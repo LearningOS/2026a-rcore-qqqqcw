@@ -55,7 +55,10 @@ extern "C" fn guest_main() -> ! {
     #[cfg(not(child))]
     {
         #[cfg(ch3)]
-        test_trace();
+        {
+            test_trace();
+            test_clock();
+        }
         #[cfg(not(ch3))]
         test_memory();
         #[cfg(any(ch5, ch6, ch8))]
@@ -82,6 +85,46 @@ fn test_trace() {
     yield_now();
     check(call(410, [2, 124, 0, 0]) == count + 1, b"yield count");
     check(call(410, [99, 0, 0, 0]) == -1, b"trace bad request");
+}
+#[cfg(ch3)]
+fn test_clock() {
+    fn now() -> usize {
+        let mut time = [0usize; 2];
+        check(
+            call(169, [time.as_mut_ptr() as usize, 0, 0, 0]) == 0,
+            b"gettime result",
+        );
+        check(time[1] < 1_000_000, b"gettime microseconds range");
+        time[0] * 1_000_000 + time[1]
+    }
+    let start = now();
+    check(start > 0, b"gettime positive");
+    let mut advanced = false;
+    let mut previous = start;
+    for _ in 0..20_000 {
+        yield_now();
+        let current = now();
+        check(current >= previous, b"gettime monotonic");
+        previous = current;
+        if current - start >= 20_000 {
+            advanced = true;
+            break;
+        }
+    }
+    check(advanced, b"gettime advances while yielding");
+    let start = now();
+    let mut advanced = false;
+    for _ in 0..1_000_000 {
+        let current = now();
+        check(current >= previous, b"busy gettime monotonic");
+        previous = current;
+        if current - start >= 20_000 {
+            advanced = true;
+            break;
+        }
+    }
+    check(advanced, b"gettime advances without yielding");
+    write(b"SMOKE CLOCK PASS\n");
 }
 #[cfg(not(ch3))]
 fn test_memory() {

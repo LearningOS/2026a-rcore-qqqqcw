@@ -12,8 +12,13 @@ parser.add_argument("--kernel-dir", type=Path, help="Existing disposable chapter
 parser.add_argument("--bios", default=str(ROOT / "bootloader/rustsbi-qemu.bin"))
 parser.add_argument("--offline", action="store_true")
 parser.add_argument("--vendor-dir", type=Path, help="Optional cached crates.io directory")
+parser.add_argument("--mode", choices=["release", "debug"], default="release")
+parser.add_argument("--tasks", type=int, default=1,
+                    help="Number of independent chapter 3 guests (1 to 16)")
 args = parser.parse_args()
 chapter = args.chapter
+if not 1 <= args.tasks <= 16 or (chapter != "ch3" and args.tasks != 1):
+    parser.error("--tasks must be 1 to 16 for ch3, and 1 for other chapters")
 if args.kernel_dir:
     dest = args.kernel_dir.resolve()
 else:
@@ -30,15 +35,27 @@ out.mkdir(parents=True, exist_ok=True)
 for old in out.glob("*.elf"):
     old.unlink()
 link = dest / "user/linker.ld"
-start = "0x80400000" if chapter == "ch3" else "0x10000"
-link.write_text("OUTPUT_ARCH(riscv)\nENTRY(_start)\nSECTIONS { . = " + start +
-                "; .text : { *(.text.entry) *(.text .text.*) } . = ALIGN(4096); "
-                ".rodata : { *(.rodata .rodata.*) } . = ALIGN(4096); "
-                ".data : { *(.data .data.*) *(.sdata .sdata.*) } "
-                ".bss : { *(.bss .bss.*) *(.sbss .sbss.*) } /DISCARD/ : { *(.eh_frame) } }")
+start = 0x80400000 if chapter == "ch3" else 0x10000
 name = chapter + "b_initproc"
-for child in [False, True] if chapter in ("ch5", "ch6", "ch8") else [False]:
-    target = out / ("child.elf" if child else name + ".elf")
+guests = [(index, False) for index in range(args.tasks)]
+if chapter in ("ch5", "ch6", "ch8"):
+    guests.append((0, True))
+if chapter == "ch3":
+    binpath = dest / "user/build/bin"
+    binpath.mkdir(parents=True, exist_ok=True)
+    for old in binpath.glob("*.bin"):
+        old.unlink()
+for index, child in guests:
+    address = start + index * 0x20000
+    link.write_text("OUTPUT_ARCH(riscv)\nENTRY(_start)\nSECTIONS { . = " + hex(address) +
+                    "; .text : { *(.text.entry) *(.text .text.*) } . = ALIGN(4096); "
+                    ".rodata : { *(.rodata .rodata.*) } . = ALIGN(4096); "
+                    ".data : { *(.data .data.*) *(.sdata .sdata.*) } "
+                    ".bss : { *(.bss .bss.*) *(.sbss .sbss.*) } /DISCARD/ : { *(.eh_frame) } }")
+    guest_name = "child" if child else name
+    if chapter == "ch3":
+        guest_name += f"{index:02}"
+    target = out / (guest_name + ".elf")
     cmd = ["rustc", "+nightly-2024-05-02", "--edition=2021", "--target",
            "riscv64gc-unknown-none-elf", "-C", "opt-level=2", "-C", "panic=abort",
            "-C", "link-arg=-T" + str(link), "--cfg", chapter,
@@ -46,21 +63,18 @@ for child in [False, True] if chapter in ("ch5", "ch6", "ch8") else [False]:
     if child:
         cmd += ["--cfg", "child"]
     subprocess.run(cmd, check=True)
-if chapter == "ch3":
-    binpath = dest / "user/build/bin"
-    binpath.mkdir(parents=True, exist_ok=True)
-    for old in binpath.glob("*.bin"):
-        old.unlink()
-    subprocess.run(["rust-objcopy", "--strip-all", "-O", "binary",
-                    str(out / (name + ".elf")), str(binpath / (name + ".bin"))], check=True)
+    if chapter == "ch3":
+        subprocess.run(["rust-objcopy", "--strip-all", "-O", "binary",
+                        str(target), str(binpath / (guest_name + ".bin"))], check=True)
 
 cargo = ["--offline"] if args.offline else []
 if args.vendor_dir:
     cargo += ["--config", 'source.crates-io.replace-with="local-vendor"', "--config",
               'source.local-vendor.directory="' + str(args.vendor_dir.resolve()) + '"']
-subprocess.run(["cargo", "+nightly-2024-05-02", "build", "--release",
+mode_flags = ["--release"] if args.mode == "release" else []
+subprocess.run(["cargo", "+nightly-2024-05-02", "build"] + mode_flags + [
                 "--target", "riscv64gc-unknown-none-elf"] + cargo, cwd=dest / "os", check=True)
-kernel = dest / "os/target/riscv64gc-unknown-none-elf/release/os"
+kernel = dest / "os/target/riscv64gc-unknown-none-elf" / args.mode / "os"
 cmd = ["qemu-system-riscv64", "-machine", "virt", "-nographic", "-bios", args.bios,
        "-kernel", str(kernel)]
 if chapter in ("ch6", "ch8"):
@@ -78,6 +92,6 @@ except subprocess.TimeoutExpired as error:
     result = None
 (dest / "smoke.log").write_text(log)
 print(log)
-if result is None or result.returncode != 0 or "SMOKE PASS" not in log \
+if result is None or result.returncode != 0 or log.count("SMOKE PASS") != args.tasks \
         or "SMOKE FAIL" in log or "SMOKE PANIC" in log:
     raise SystemExit(1)
