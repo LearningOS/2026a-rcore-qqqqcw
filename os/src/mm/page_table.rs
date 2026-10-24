@@ -149,7 +149,9 @@ impl PageTable {
     }
     /// get the page table entry from the virtual page number
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
-        self.find_pte(vpn).map(|pte| *pte)
+        self.find_pte(vpn)
+            .filter(|pte| pte.is_valid())
+            .map(|pte| *pte)
     }
     /// get the token from the page table
     pub fn token(&self) -> usize {
@@ -178,4 +180,48 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         start = end_va.into();
     }
     v
+}
+
+/// Validate the entire user buffer before exposing any bytes to the caller.
+/// `write` describes kernel writes to user memory.
+pub fn checked_user_buffer(
+    token: usize,
+    ptr: *const u8,
+    len: usize,
+    write: bool,
+) -> Option<Vec<&'static mut [u8]>> {
+    let start = ptr as usize;
+    let end = start.checked_add(len)?;
+    if end > (1usize << 38) {
+        return None;
+    }
+    let page_table = PageTable::from_token(token);
+    let mut cursor = start;
+    while cursor < end {
+        let address = VirtAddr::from(cursor);
+        let pte = page_table.translate(address.floor())?;
+        if !pte.flags().contains(PTEFlags::U)
+            || (write && !pte.writable())
+            || (!write && !pte.readable())
+        {
+            return None;
+        }
+        cursor += (crate::config::PAGE_SIZE - address.page_offset()).min(end - cursor);
+    }
+    Some(translated_byte_buffer(token, ptr, len))
+}
+
+/// Copy bytes to a validated user buffer, including across page boundaries.
+pub fn copy_to_user(token: usize, ptr: *mut u8, data: &[u8]) -> bool {
+    let buffers = match checked_user_buffer(token, ptr, data.len(), true) {
+        Some(buffers) => buffers,
+        None => return false,
+    };
+    let mut offset = 0;
+    for buffer in buffers {
+        let end = offset + buffer.len();
+        buffer.copy_from_slice(&data[offset..end]);
+        offset = end;
+    }
+    true
 }

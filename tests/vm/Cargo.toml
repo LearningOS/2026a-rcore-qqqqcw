@@ -1,0 +1,9 @@
+[package]
+name = "rcore-vm-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bitflags = "1.3"
+lazy_static = "1.4"
+xmas-elf = "0.7"

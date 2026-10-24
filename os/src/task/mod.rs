@@ -202,3 +202,36 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
 }
+
+/// Account for a syscall before dispatch, including trace itself.
+pub fn count_syscall(id: usize) {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    if let Some(count) = inner.tasks[current].syscall_count.get_mut(id) {
+        *count += 1;
+    }
+}
+
+/// Return the current task's syscall count, or reject an invalid number.
+pub fn syscall_count(id: usize) -> isize {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    inner.tasks[inner.current_task]
+        .syscall_count
+        .get(id)
+        .map(|count| *count as isize)
+        .unwrap_or(-1)
+}
+
+/// Map anonymous pages into the current task's address space.
+pub fn mmap(start: usize, len: usize, port: usize) -> isize {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    inner.tasks[current].memory_set.mmap(start, len, port)
+}
+
+/// Unmap pages from the current task's address space.
+pub fn munmap(start: usize, len: usize) -> isize {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    inner.tasks[current].memory_set.munmap(start, len)
+}
